@@ -1,0 +1,340 @@
+---
+title: "Simulación Incial"
+output: html_document
+date: "2025-05-01"
+---
+
+
+```{r}
+#Limpiamos environment
+
+rm(list = ls())
+```
+
+```{r}
+# Cargamos librerías
+
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(writexl)
+```
+
+Cargar datos de consumo y producción reales mensuales y limpiar datos
+
+```{r}
+datos <- "XX.xlsx"
+
+df_raw <- read_excel(datos, col_names = FALSE)  # No usar la primera fila como nombres de columna
+
+colnames(df_raw) <- c("Categoria", "ene", "feb", "mar", "abr", 
+                      "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+```
+
+```{r}
+#Eliminamos cualquier fila que contenga al menos un NA
+df_raw <- df_raw[complete.cases(df_raw), ]
+```
+
+Rotar el df, para poder trabajar con el
+
+```{r}
+#Convertimos los meses en filas
+df_long <- df_raw %>%
+  pivot_longer(
+    cols = -Categoria, 
+    names_to = "Mes",
+    values_to = "Valor",
+    # Forzar a numérico: los valores no convertibles se vuelven NA
+    values_transform = list(Valor = ~ as.numeric(as.character(.)))
+  )
+
+#Usamos la columna Categoria como nuevas columnas
+df <- df_long %>%
+  pivot_wider(       
+    names_from = Categoria,    # crea una columna para cada categoría
+    values_from = Valor        # los valores provienen de "Valor"
+  )
+
+#Eliminamos la columna de fecha, ya que ya tenemos el mes
+df <- df %>%
+  select(-Fecha) %>% 
+  mutate(Año = 2024)
+
+colnames(df) <- c("Mes", "Consumo_Vivienda", "Consumo_Hotel", "Produccion_Vivienda", "Produccion_Hotel", "Año")
+
+head(df)
+```
+
+Proyecciones de consumo energético a 20 años
+
+```{r}
+#Definimos manualmente el porcentaje de variabilidad para los consumos
+variabilidad <- list(
+  Consumo_Vivienda = 0.20,  
+  Consumo_Hotel = 0.15      
+)
+```
+
+```{r}
+set.seed(42) 
+
+#Simulamos la serie, calculando la desviación típico como % de la media.
+simular_serie <- function(media, porcentaje_sd, n) {
+  sd_valor <- media * porcentaje_sd 
+  rnorm(n, mean = media, sd = sd_valor)
+}
+```
+
+```{r}
+#Generamos datos proyectados para los consumos
+n_meses <- 240
+meses_futuros <- rep(df$Mes, length.out = n_meses)
+
+consumo_vivienda_sim <- simular_serie(rep(df$Consumo_Vivienda, length.out = n_meses), 
+                                      variabilidad$Consumo_Vivienda, n_meses)
+
+consumo_hotel_sim <- simular_serie(rep(df$Consumo_Hotel, length.out = n_meses), 
+                                   variabilidad$Consumo_Hotel, n_meses)
+
+#Creamos dataframe con las proyecciones
+df_futuro_consumos <- data.frame(
+  Mes = rep(df$Mes, length.out = n_meses),
+  Año = rep(2025:2044, each = 12),
+  Consumo_Vivienda = consumo_vivienda_sim,
+  Consumo_Hotel = consumo_hotel_sim
+)
+```
+
+
+```{r}
+# Agregamos un indicador para diferenciar datos históricos y proyectados
+df <- df %>% 
+  mutate(Origen = "Histórico")
+df_futuro_consumos <- df_futuro_consumos %>% 
+  mutate(Origen = "Proyección")
+
+#Unimos dataframes
+df_total_consumos <- bind_rows(df, df_futuro_consumos)
+
+df_total_consumos <- df_total_consumos %>%
+  select(-Produccion_Vivienda, -Produccion_Hotel)
+
+#Verificamos la estructura del dataframe unificado
+str(df_total_consumos)
+
+head(df_total_consumos)
+```
+
+Ordenar los meses, para que salgan bien en los gráficos
+
+```{r}
+df_total_consumos$Mes <- factor(df_total_consumos$Mes, levels = c("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"))
+```
+
+Gráfico Consumos Vivienda Año a Año
+
+```{r}
+Consumo_Vivienda <- ggplot(df_total_consumos, aes(x = Mes, y = Consumo_Vivienda, color = as.factor(Año), group = Año)) +
+  geom_line() + 
+  geom_point() +  
+  labs(title = "Comparación de Consumo Energético por Año - Vivienda Unifamiliar",
+       x = "Mes",
+       y = "Consumo (kWh)",
+       color = "Año") + 
+  theme_minimal() +
+  theme(legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+Consumo_Vivienda
+```
+
+Gráfico Consumos Hotel Año a Año
+
+```{r}
+Consumo_Hotel <- ggplot(df_total_consumos, aes(x = Mes, y = Consumo_Hotel, color = as.factor(Año), group = Año)) +
+  geom_line() + 
+  geom_point() +
+  labs(title = "Comparación de Consumo Energético por Año - Hotel",
+       x = "Mes",
+       y = "Consumo (kWh)",
+       color = "Año") + 
+  theme_minimal() +
+  theme(legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+Consumo_Hotel
+```
+
+
+Proyecciones de producción energético a 20 años
+
+```{r}
+#Definimos la variabilidad mensual y la tasa de degradación anual
+variabilidad_produccion <- 0.05  
+tasa_degradacion_anual <- 0.005 
+tasa_degradacion_mensual <- (1 - tasa_degradacion_anual)^(1/12)  
+```
+
+```{r}
+#Extraemos los valores de producción de 2024 como base
+produccion_base_vivienda <- df %>% filter(Año == 2024) %>% select(Mes, Produccion_Vivienda)
+produccion_base_hotel <- df %>% filter(Año == 2024) %>% select(Mes, Produccion_Hotel)
+
+#Nos aseguramos que los meses están en el orden correcto
+meses_ordenados <- unique(produccion_base_vivienda$Mes)
+produccion_base_vivienda <- produccion_base_vivienda %>% arrange(factor(Mes, levels = meses_ordenados, ordered = TRUE))
+produccion_base_hotel <- produccion_base_hotel %>% arrange(factor(Mes, levels = meses_ordenados, ordered = TRUE))
+```
+
+```{r}
+#Simulamos la serie, calculando la desviación típico como % de la media y degradando la media mensualmente (representando la menor productividad de los equipos con el paso del tiempo)
+simular_produccion <- function(produccion_base, columna_nombre, variabilidad, tasa_degradacion_mensual, n_meses) {
+  produccion <- numeric(n_meses)
+  
+  for (mes in 1:n_meses) {
+    #Determinamos el mes correspondiente en el ciclo anual (1-12)
+    mes_actual <- (mes - 1) %% 12 + 1
+    # Determinar el año correspondiente
+    año <- ceiling(mes / 12)
+    
+    #Obtenemos la producción base del mes correspondiente en 2024
+    base_mensual <- produccion_base[[columna_nombre]][mes_actual]  # Ahora acepta cualquier columna
+    
+    #Aplicamos la degradación progresiva
+    media_ajustada <- base_mensual * (tasa_degradacion_mensual ^ (mes - 1))
+    
+    #Generamos el valor mensual con variabilidad
+    produccion[mes] <- rnorm(1, mean = media_ajustada, sd = media_ajustada * variabilidad)
+  }
+  return(produccion)
+}
+
+```
+
+
+
+```{r}
+#Generamos datos proyectados para la producción
+n_meses <- 240
+
+# Producción vivienda
+produccion_vivienda_sim <- simular_produccion(
+  produccion_base = produccion_base_vivienda,
+  columna_nombre = "Produccion_Vivienda",
+  variabilidad = variabilidad_produccion,
+  tasa_degradacion_mensual = tasa_degradacion_mensual,
+  n_meses = n_meses
+)
+
+# Producción hotel
+produccion_hotel_sim <- simular_produccion(
+  produccion_base = produccion_base_hotel,
+  columna_nombre = "Produccion_Hotel",
+  variabilidad = variabilidad_produccion,
+  tasa_degradacion_mensual = tasa_degradacion_mensual,
+  n_meses = n_meses
+)
+```
+
+
+```{r}
+#Creamos dataframe con las proyecciones
+df_futuro_produccion <- data.frame(
+  Mes = rep(df$Mes, length.out = n_meses),
+  Año = rep(2025:2044, each = 12),
+  Produccion_Vivienda = produccion_vivienda_sim,
+  Produccion_Hotel = produccion_hotel_sim
+)
+```
+
+```{r}
+#Agregamos un indicador para diferenciar datos históricos y proyectados
+df_futuro_produccion <- df_futuro_produccion %>% mutate(Origen = "Proyección")
+
+#Unimos ambos dataframes
+df_total_produccion <- bind_rows(df, df_futuro_produccion) %>%
+  select(-Consumo_Vivienda, -Consumo_Hotel)
+
+#Verificamos la estructura del dataframe unificado
+str(df_total_produccion)
+
+head(df_total_produccion)
+```
+
+Ordenar los meses, para que salgan bien en los gráficos
+
+```{r}
+df_total_produccion$Mes <- factor(df_total_consumos$Mes, levels = c("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"))
+```
+
+Gráfico Producción Vivienda Año a Año
+
+```{r}
+Produccion_Vivienda <- ggplot(df_total_produccion, aes(x = Mes, y = Produccion_Vivienda, color = as.factor(Año), group = Año)) +
+  geom_line() + 
+  geom_point() +  
+  labs(title = "Comparación de Producción Energética por Año - Vivienda Unifamiliar",
+       x = "Mes",
+       y = "Producción (kWh)",
+       color = "Año") + 
+  theme_minimal() +
+  theme(legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+Produccion_Vivienda
+```
+
+
+Gráfico Producción Hotel Año a Año
+```{r}
+Produccion_Hotel <- ggplot(df_total_produccion, aes(x = Mes, y = Produccion_Hotel, color = as.factor(Año), group = Año)) +
+  geom_line() + 
+  geom_point() +  
+  labs(title = "Comparación de Producción Energética por Año - Hotel",
+       x = "Mes",
+       y = "Producción (kWh)",
+       color = "Año") + 
+  theme_minimal() +
+  theme(legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+Produccion_Hotel
+```
+
+Guardar todos los gráficos
+
+```{r}
+ggsave("Produccion_Vivienda.png", plot = Produccion_Vivienda, width = 14, height = 6.5, dpi = 300)
+ggsave("Consumo_Vivienda.png", plot = Consumo_Vivienda, width = 14, height = 6.5, dpi = 300)
+ggsave("Produccion_Hotel.png", plot = Produccion_Hotel, width = 14, height = 6.5, dpi = 300)
+ggsave("Consumo_Hotel.png", plot = Consumo_Hotel, width = 14, height = 6.5, dpi = 300)
+
+```
+
+
+Guardar excel con datos para calcular producción de hidrógeno
+
+```{r}
+# Unir ambos dataframes por Mes, Año y Origen
+df_total <- full_join(df_total_consumos, df_total_produccion,
+                      by = c("Mes", "Año", "Origen"))
+
+# Ordenar el df
+df_total <- df_total %>%
+  select(Mes, Año, Consumo_Vivienda, Consumo_Hotel, Produccion_Vivienda, Produccion_Hotel, -Origen)
+
+# Verifica que se haya unido correctamente
+head(df_total)
+```
+
+```{r}
+# Exportar el dataframe unido a un archivo Excel
+write_xlsx(df_total, path = "Consumo_Produccion_Unificado.xlsx")
+``

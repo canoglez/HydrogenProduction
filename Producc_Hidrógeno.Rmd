@@ -1,0 +1,564 @@
+---
+title: "Producc_Hidrógeno"
+output: html_document
+date: "2025-05-01"
+---
+
+```{r}
+#Limpiamos environment
+
+rm(list = ls())
+```
+
+```{r}
+# Cargamos librerías
+
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+```
+
+Cargar datos de consumo y producción reales mensuales y limpiar datos (Excel con datos de paso anterior - Simulación_Inicial)
+
+```{r}
+
+datos <- "XX.xlsx"
+
+df <- read_excel(datos, col_names = TRUE)  # No usar la primera fila como nombres de columna
+```
+
+Crear df de excesos de producción (vivienda y hotel)
+
+```{r}
+df_excesos <- df %>%
+  mutate(
+    Exceso_Vivienda = pmax(0, Produccion_Vivienda - Consumo_Vivienda),
+    Exceso_Hotel = pmax(0, Produccion_Hotel - Consumo_Hotel)
+  ) %>%
+  select(Mes, Año, Exceso_Vivienda, Exceso_Hotel)
+```
+
+
+Calculamos medias de exceso y de producción para ver que meses son más dominantes
+
+```{r}
+df_medias_mensuales <- df %>%
+  mutate(
+    Exceso_Vivienda = pmax(0, Produccion_Vivienda - Consumo_Vivienda),
+    Exceso_Hotel = pmax(0, Produccion_Hotel - Consumo_Hotel)
+  ) %>%
+  group_by(Mes) %>%
+  summarise(
+    Produccion_Media_Vivienda = mean(Produccion_Vivienda, na.rm = TRUE),
+    Produccion_Media_Hotel = mean(Produccion_Hotel, na.rm = TRUE),
+    Exceso_Medio_Vivienda = mean(Exceso_Vivienda, na.rm = TRUE),
+    Exceso_Medio_Hotel = mean(Exceso_Hotel, na.rm = TRUE)
+  ) %>%
+  arrange(factor(Mes, levels = c("ene", "feb", "mar", "abr", "may", "jun", 
+                                 "jul", "ago", "sep", "oct", "nov", "dic")))
+```
+
+```{r}
+# Creamos fila resumen con media anual
+media_anual <- df_medias_mensuales %>%
+  summarise(
+    Mes = "Media Anual",
+    Produccion_Media_Vivienda = mean(Produccion_Media_Vivienda, na.rm = TRUE),
+    Produccion_Media_Hotel = mean(Produccion_Media_Hotel, na.rm = TRUE),
+    Exceso_Medio_Vivienda = mean(Exceso_Medio_Vivienda, na.rm = TRUE),
+    Exceso_Medio_Hotel = mean(Exceso_Medio_Hotel, na.rm = TRUE)
+  ) %>%
+  mutate(
+    Porcentaje_Exceso_Vivienda = Exceso_Medio_Vivienda / Produccion_Media_Vivienda * 100,
+    Porcentaje_Exceso_Hotel = Exceso_Medio_Hotel / Produccion_Media_Hotel * 100
+  )
+
+# Añadimos la fila al dataframe original
+df_medias_mensuales <- bind_rows(df_medias_mensuales, media_anual)
+```
+
+Calculo de % que representa el exceso sobre la producción y representación gráfica
+
+```{r}
+df_medias_mensuales <- df_medias_mensuales %>%
+  mutate(
+    Porcentaje_Exceso_Vivienda = Exceso_Medio_Vivienda / Produccion_Media_Vivienda * 100,
+    Porcentaje_Exceso_Hotel = Exceso_Medio_Hotel / Produccion_Media_Hotel * 100
+  )
+```
+
+```{r}
+# Calculamos medias anuales por tipo
+medias_anuales <- df_medias_mensuales %>%
+  filter(Mes == "Media Anual") %>%
+  pivot_longer(cols = starts_with("Porcentaje"), 
+               names_to = "Tipo", 
+               values_to = "Media_Anual") %>%
+  mutate(
+    Tipo = recode(Tipo,
+                  "Porcentaje_Exceso_Vivienda" = "Vivienda",
+                  "Porcentaje_Exceso_Hotel" = "Hotel")
+  )
+
+# Reorganizamos el df en formato largo 
+df_grafico <- df_medias_mensuales %>%
+  filter(Mes != "Media Anual") %>%
+  select(Mes, Porcentaje_Exceso_Vivienda, Porcentaje_Exceso_Hotel) %>%
+  pivot_longer(cols = starts_with("Porcentaje"), 
+               names_to = "Tipo", 
+               values_to = "Porcentaje") %>%
+  mutate(
+    Tipo = recode(Tipo,
+                  "Porcentaje_Exceso_Vivienda" = "Vivienda",
+                  "Porcentaje_Exceso_Hotel" = "Hotel"),
+    Porcentaje_label = paste0(round(Porcentaje, 1), "%")
+  )
+
+# Ordenamos los meses
+df_grafico$Mes <- factor(df_grafico$Mes, levels = c("ene", "feb", "mar", "abr", "may", "jun",
+                                                     "jul", "ago", "sep", "oct", "nov", "dic"))
+
+# Creamos gráfico de barras con línea de media anual
+PorcentajeExceso <- ggplot(df_grafico, aes(x = Mes, y = Porcentaje, fill = Tipo)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(aes(label = Porcentaje_label), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 3) +
+  geom_hline(data = medias_anuales, 
+             aes(yintercept = Media_Anual, color = Tipo), 
+             linetype = "dotted", size = 1, show.legend = FALSE) +
+  scale_fill_manual(values = c("Vivienda" = "darkgreen", "Hotel" = "firebrick")) +
+  scale_color_manual(values = c("Vivienda" = "darkgreen", "Hotel" = "firebrick")) +
+  labs(title = "Porcentaje de Exceso sobre Producción por Mes",
+       y = "Exceso sobre Producción (%)",
+       x = "Mes",
+       fill = "Tipo de instalación") +
+  theme_minimal()
+
+PorcentajeExceso
+```
+
+Calculo de reservas de hidrógeno y neceesidades de electricidad - Vivienda
+
+```{r}
+df_autoconsumo_vivienda <- df %>%
+  select(Año, Mes,
+         Consumo = Consumo_Vivienda,
+         Produccion = Produccion_Vivienda)
+```
+
+
+```{r}
+# Parámetros
+efic_transformacion_inicial <- 0.65  # Eficiencia electricidad -> H₂
+efic_regeneracion_inicial <- 0.55    # Eficiencia H₂ -> electricidad
+degradacion_transformacion <- 0.003  # 0,3% anual
+degradacion_regeneracion <- 0.002    # 0,2% anual
+almacenamiento_maximo <- 2220        # kWh (capacidad máxima de almacenamiento de H₂ para vivienda)
+
+# Inicialización de vectores
+n <- nrow(df_autoconsumo_vivienda)
+h2_generado <- numeric(n)
+elec_regenerada <- numeric(n)
+necesidad_no_cubierta <- numeric(n)
+almacenamiento <- numeric(n)
+
+
+almacenamiento_actual <- 0
+
+# Aseguramos orden cronológico
+df_autoconsumo_vivienda <- df_autoconsumo_vivienda %>%
+  arrange(Año, match(Mes, c("ene", "feb", "mar", "abr", "may", "jun",
+                            "jul", "ago", "sep", "oct", "nov", "dic")))
+```
+
+```{r}
+# Simulación mes a mes
+for (i in 1:n) {
+  año_actual <- df_autoconsumo_vivienda$Año[i]
+  año_inicial <- min(df_autoconsumo_vivienda$Año)
+  años_pasados <- max(0, año_actual - año_inicial)  # Degradación empieza el segundo año
+
+  # Ajuste de eficiencias con degradación
+  eficiencia_transformacion <- efic_transformacion_inicial * (1 - degradacion_transformacion)^años_pasados
+  eficiencia_regeneracion <- efic_regeneracion_inicial * (1 - degradacion_regeneracion)^años_pasados
+
+  # Variables de cada mes
+  produccion <- df_autoconsumo_vivienda$Produccion[i]
+  consumo <- df_autoconsumo_vivienda$Consumo[i]
+  
+  exceso <- max(0, produccion - consumo)  # Exceso que podemos transformar
+  deficit <- max(0, consumo - produccion) # Déficit a cubrir
+
+  # H₂ generado en el mes
+  h2_a_almacenar <- exceso * eficiencia_transformacion
+  
+  # Capacidad disponible en almacenamiento
+  espacio_disponible <- almacenamiento_maximo - almacenamiento_actual
+  
+  if (h2_a_almacenar <= espacio_disponible) {
+    almacenamiento_actual <- almacenamiento_actual + h2_a_almacenar
+    h2_generado[i] <- h2_a_almacenar
+  } else {
+    almacenamiento_actual <- almacenamiento_maximo
+    h2_generado[i] <- espacio_disponible
+  }
+
+  # Ahora intentamos cubrir el déficit con regeneración de electricidad
+  energia_disponible <- almacenamiento_actual * eficiencia_regeneracion
+  
+  if (energia_disponible >= deficit) {
+    elec_regenerada[i] <- deficit
+    almacenamiento_actual <- almacenamiento_actual - (deficit / eficiencia_regeneracion)
+    necesidad_no_cubierta[i] <- 0
+  } else {
+    elec_regenerada[i] <- energia_disponible
+    almacenamiento_actual <- 0
+    necesidad_no_cubierta[i] <- deficit - energia_disponible
+  }
+
+  # Guardamos el almacenamiento tras actuar
+  almacenamiento[i] <- almacenamiento_actual
+}
+```
+
+```{r}
+# Añadimos todo al dataframe
+df_autoconsumo_vivienda <- df_autoconsumo_vivienda %>%
+  mutate(
+    H2_Generado = h2_generado,
+    Elec_Regenerada = elec_regenerada,
+    Necesidad_No_Autoconsumida = necesidad_no_cubierta,
+    Almacenamiento_H2 = almacenamiento
+  )
+```
+
+Calculo de reservas de hidrógeno y neceesidades de electricidad - Hotel
+
+```{r}
+df_autoconsumo_hotel <- df %>%
+  select(Año, Mes,
+         Consumo = Consumo_Hotel,
+         Produccion = Produccion_Hotel)
+```
+
+```{r}
+# Parámetros para el hotel
+efic_transformacion_inicial <- 0.65  
+efic_regeneracion_inicial <- 0.55    
+degradacion_transformacion <- 0.003  
+degradacion_regeneracion <- 0.002
+almacenamiento_maximo_hotel <- 32000  # Capacidad máxima de almacenamiento H₂ para hotel
+
+# Inicialización de vectores
+n_hotel <- nrow(df_autoconsumo_hotel)
+h2_generado_hotel <- numeric(n_hotel)
+elec_regenerada_hotel <- numeric(n_hotel)
+necesidad_no_cubierta_hotel <- numeric(n_hotel)
+almacenamiento_hotel <- numeric(n_hotel)
+
+almacenamiento_actual_hotel <- 0
+
+# Orden cronológico
+df_autoconsumo_hotel <- df_autoconsumo_hotel %>%
+  arrange(Año, match(Mes, c("ene", "feb", "mar", "abr", "may", "jun",
+                             "jul", "ago", "sep", "oct", "nov", "dic")))
+
+```
+
+```{r}
+# Simulación dinámica
+for (i in 1:n_hotel) {
+  
+  año_actual <- df_autoconsumo_hotel$Año[i]
+  año_inicial <- min(df_autoconsumo_hotel$Año)
+  años_pasados <- max(0, año_actual - año_inicial)
+
+  # Eficiencias degradadas
+  eficiencia_transformacion <- efic_transformacion_inicial * (1 - degradacion_transformacion)^años_pasados
+  eficiencia_regeneracion <- efic_regeneracion_inicial * (1 - degradacion_regeneracion)^años_pasados
+
+  produccion <- df_autoconsumo_hotel$Produccion[i]
+  consumo <- df_autoconsumo_hotel$Consumo[i]
+  
+  exceso <- max(0, produccion - consumo)
+  deficit <- max(0, consumo - produccion)
+
+  # H₂ generado
+  h2_a_almacenar <- exceso * eficiencia_transformacion
+  
+  espacio_disponible <- almacenamiento_maximo_hotel - almacenamiento_actual_hotel
+  
+  if (h2_a_almacenar <= espacio_disponible) {
+    almacenamiento_actual_hotel <- almacenamiento_actual_hotel + h2_a_almacenar
+    h2_generado_hotel[i] <- h2_a_almacenar
+  } else {
+    almacenamiento_actual_hotel <- almacenamiento_maximo_hotel
+    h2_generado_hotel[i] <- espacio_disponible
+  }
+
+  # Regeneración para cubrir necesidad
+  energia_disponible <- almacenamiento_actual_hotel * eficiencia_regeneracion
+  
+  if (energia_disponible >= deficit) {
+    elec_regenerada_hotel[i] <- deficit
+    almacenamiento_actual_hotel <- almacenamiento_actual_hotel - (deficit / eficiencia_regeneracion)
+    necesidad_no_cubierta_hotel[i] <- 0
+  } else {
+    elec_regenerada_hotel[i] <- energia_disponible
+    necesidad_no_cubierta_hotel[i] <- deficit - energia_disponible
+    almacenamiento_actual_hotel <- 0
+  }
+
+  almacenamiento_hotel[i] <- almacenamiento_actual_hotel
+}
+```
+
+```{r}
+# Añadimos resultados al df
+df_autoconsumo_hotel <- df_autoconsumo_hotel %>%
+  mutate(
+    H2_Generado = h2_generado_hotel,
+    Elec_Regenerada = elec_regenerada_hotel,
+    Necesidad_No_Autoconsumida = necesidad_no_cubierta_hotel,
+    Almacenamiento_H2 = almacenamiento_hotel
+  )
+```
+
+Gráficos
+
+% de electricidad generada a partir de hidrógeno respececto a la producción solar incial.
+
+```{r}
+# Vivienda
+df_elec_regenerada_vivienda <- df_autoconsumo_vivienda %>%
+  mutate(Porcentaje_Elec_Regenerada = (Elec_Regenerada / Produccion) * 100)
+
+df_h2_vivienda_anual <- df_h2_vivienda %>%
+  group_by(Año) %>%
+  summarise(Porcentaje_H2 = mean(Porcentaje_H2, na.rm = TRUE))
+
+# Hotel
+df_elec_regenerada_hotel <- df_autoconsumo_hotel %>%
+  mutate(Porcentaje_Elec_Regenerada = (Elec_Regenerada / Produccion) * 100)
+
+df_h2_hotel_anual <- df_h2_hotel %>%
+  group_by(Año) %>%
+  summarise(Porcentaje_H2 = mean(Porcentaje_H2, na.rm = TRUE))
+
+# Unimos
+df_h2_total_anual <- bind_rows(
+  df_h2_vivienda_anual %>% mutate(Tipo = "Vivienda"),
+  df_h2_hotel_anual %>% mutate(Tipo = "Hotel")
+)
+
+ElectricidadGenerada <- ggplot(df_h2_total_anual, aes(x = Año, y = Porcentaje_H2, color = Tipo)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 2) +
+  labs(
+    title = "% de electricidad generada a partir de H2 respecto a la Producción (Promedio Anual)",
+    x = "Año",
+    y = ""
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Vivienda" = "darkgreen", "Hotel" = "firebrick"))
+
+ElectricidadGenerada
+
+```
+
+Media mensual no cubierta y almacenamiento - Vivienda
+```{r}
+df_resumen_vivienda <- df_autoconsumo_vivienda %>%
+  group_by(Mes) %>%
+  summarise(
+    Media_Necesidad_No_Cubierta = mean(Necesidad_No_Autoconsumida, na.rm = TRUE),
+    Media_Almacenamiento = mean(Almacenamiento_H2, na.rm = TRUE)
+  ) %>%
+  mutate(Mes = factor(Mes, levels = c("ene", "feb", "mar", "abr", "may", "jun",
+                                      "jul", "ago", "sep", "oct", "nov", "dic")))
+
+AlmacenamientoNecesidad_Vivienda <- ggplot(df_resumen_vivienda, aes(x = Mes)) +
+  geom_col(aes(y = Media_Necesidad_No_Cubierta), fill = "firebrick", alpha = 0.7) +
+  geom_line(aes(y = Media_Almacenamiento), color = "darkgreen", size = 1.2, group = 1) +
+  geom_point(aes(y = Media_Almacenamiento), color = "darkgreen", size = 2) +
+  labs(
+    title = "Media mensual de necesidad no cubierta y almacenamiento (Vivienda)",
+    x = "Mes",
+    y = "kWh",
+    caption = "Barras: necesidad no cubierta | Línea: almacenamiento medio"
+  ) +
+  theme_minimal()
+
+AlmacenamientoNecesidad_Vivienda
+```
+
+Media mensual no cubierta y almacenamiento - Hotel
+
+```{r}
+df_resumen_hotel <- df_autoconsumo_hotel %>%
+  group_by(Mes) %>%
+  summarise(
+    Media_Necesidad_No_Cubierta = mean(Necesidad_No_Autoconsumida, na.rm = TRUE),
+    Media_Almacenamiento = mean(Almacenamiento_H2, na.rm = TRUE)
+  ) %>%
+  mutate(Mes = factor(Mes, levels = c("ene", "feb", "mar", "abr", "may", "jun",
+                                      "jul", "ago", "sep", "oct", "nov", "dic")))
+
+AlmacenamientoNecesidad_Hotel <- ggplot(df_resumen_hotel, aes(x = Mes)) +
+  geom_col(aes(y = Media_Necesidad_No_Cubierta), fill = "firebrick", alpha = 0.7) +
+  geom_line(aes(y = Media_Almacenamiento), color = "darkgreen", size = 1.2, group = 1) +
+  geom_point(aes(y = Media_Almacenamiento), color = "darkgreen", size = 2) +
+  labs(
+    title = "Media mensual de necesidad no cubierta y almacenamiento (Hotel)",
+    x = "Mes",
+    y = "kWh",
+    caption = "Barras: necesidad no cubierta | Línea: almacenamiento medio"
+  ) +
+  theme_minimal()
+
+AlmacenamientoNecesidad_Hotel
+```
+
+
+Evolución del almacenamiento de H2 (anual)
+
+```{r}
+df_almacenamiento_vivienda <- df_autoconsumo_vivienda %>%
+  group_by(Año) %>%
+  summarise(Almacenamiento_Medio = mean(Almacenamiento_H2, na.rm = TRUE))
+
+df_almacenamiento_hotel <- df_autoconsumo_hotel %>%
+  group_by(Año) %>%
+  summarise(Almacenamiento_Medio = mean(Almacenamiento_H2, na.rm = TRUE))
+
+# Unimos ambos datasets
+df_almacenamiento_total <- bind_rows(
+  df_almacenamiento_vivienda %>% mutate(Tipo = "Vivienda"),
+  df_almacenamiento_hotel %>% mutate(Tipo = "Hotel")
+)
+
+EvolucionAlmacenamiento <- ggplot(df_almacenamiento_total, aes(x = Año, y = Almacenamiento_Medio, color = Tipo)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Evolución del almacenamiento medio de H2",
+    x = "Año",
+    y = "kWh almacenados"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Vivienda" = "darkgreen", "Hotel" = "firebrick"))
+
+EvolucionAlmacenamiento
+```
+
+Comparativa de producción Vs. consumo 
+
+```{r}
+# Vivienda
+df_produccion_consumo_vivienda <- df_autoconsumo_vivienda %>%
+  group_by(Año) %>%
+  summarise(
+    Consumo_Anual = sum(Consumo, na.rm = TRUE),
+    Produccion_Anual = sum(Produccion, na.rm = TRUE)
+  )
+
+Comparativa_Vivienda <- ggplot(df_produccion_consumo_vivienda, aes(x = Año)) +
+  geom_line(aes(y = Consumo_Anual, color = "Consumo"), size = 1) +
+  geom_line(aes(y = Produccion_Anual, color = "Producción"), size = 1) +
+  labs(title = "Consumo vs Producción Anual (Vivienda)",
+       x = "Año",
+       y = "kWh") +
+  scale_color_manual(values = c("Consumo" = "firebrick", "Producción" = "darkblue")) +
+  theme_minimal()
+
+# Hotel
+df_produccion_consumo_hotel <- df_autoconsumo_hotel %>%
+  group_by(Año) %>%
+  summarise(
+    Consumo_Anual = sum(Consumo, na.rm = TRUE),
+    Produccion_Anual = sum(Produccion, na.rm = TRUE)
+  )
+
+Comparativa_Hotel <- ggplot(df_produccion_consumo_hotel, aes(x = Año)) +
+  geom_line(aes(y = Consumo_Anual, color = "Consumo"), size = 1) +
+  geom_line(aes(y = Produccion_Anual, color = "Producción"), size = 1) +
+  labs(title = "Consumo vs Producción Anual (Hotel)",
+       x = "Año",
+       y = "kWh") +
+  scale_color_manual(values = c("Consumo" = "firebrick", "Producción" = "darkblue")) +
+  theme_minimal()
+
+Comparativa_Vivienda
+Comparativa_Hotel
+
+```
+
+Evolución del % de Autoconsumo Efectivo
+
+```{r}
+# Vivienda
+df_autoconsumo_efectivo_vivienda <- df_autoconsumo_vivienda %>%
+  mutate(
+    Produccion_Autoconsumida = pmin(Consumo, Produccion)
+  ) %>%
+  group_by(Año) %>%
+  summarise(
+    Consumo_Anual = sum(Consumo, na.rm = TRUE),
+    Produccion_Autoconsumida_Anual = sum(Produccion_Autoconsumida, na.rm = TRUE),
+    Elec_Regenerada_Anual = sum(Elec_Regenerada, na.rm = TRUE)
+  ) %>%
+  mutate(
+    Autoconsumo_Efectivo = (Produccion_Autoconsumida_Anual + Elec_Regenerada_Anual) / Consumo_Anual * 100
+  )
+
+# Hotel
+df_autoconsumo_efectivo_hotel <- df_autoconsumo_hotel %>%
+  mutate(
+    Produccion_Autoconsumida = pmin(Consumo, Produccion)
+  ) %>%
+  group_by(Año) %>%
+  summarise(
+    Consumo_Anual = sum(Consumo, na.rm = TRUE),
+    Produccion_Autoconsumida_Anual = sum(Produccion_Autoconsumida, na.rm = TRUE),
+    Elec_Regenerada_Anual = sum(Elec_Regenerada, na.rm = TRUE)
+  ) %>%
+  mutate(
+    Autoconsumo_Efectivo = (Produccion_Autoconsumida_Anual + Elec_Regenerada_Anual) / Consumo_Anual * 100
+  )
+
+
+# Unir ambos datasets
+df_autoconsumo_total <- bind_rows(
+  df_autoconsumo_efectivo_vivienda %>% mutate(Tipo = "Vivienda"),
+  df_autoconsumo_efectivo_hotel %>% mutate(Tipo = "Hotel")
+)
+
+AutoconsumoEfectivo <- ggplot(df_autoconsumo_total, aes(x = Año, y = Autoconsumo_Efectivo, color = Tipo)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Evolución del % de Autoconsumo Efectivo",
+    x = "Año",
+    y = ""
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Vivienda" = "darkgreen", "Hotel" = "firebrick"))
+
+AutoconsumoEfectivo
+```
+
+Descargar imágenes de gráficos
+
+```{r}
+ggsave("PorcentajeExceso.png", plot = PorcentajeExceso, width = 14, height = 6.5, dpi = 300)
+ggsave("ElectricidadGenerada.png", plot = ElectricidadGenerada, width = 14, height = 6.5, dpi = 300)
+ggsave("AlmacenamientoNecesidad_Vivienda.png", plot = AlmacenamientoNecesidad_Vivienda, width = 14, height = 6.5, dpi = 300)
+ggsave("AlmacenamientoNecesidad_Hotel.png", plot = AlmacenamientoNecesidad_Hotel, width = 14, height = 6.5, dpi = 300)
+ggsave("EvolucionAlmacenamiento.png", plot = EvolucionAlmacenamiento, width = 14, height = 6.5, dpi = 300)
+ggsave("Comparativa_Vivienda.png", plot = Comparativa_Vivienda, width = 14, height = 6.5, dpi = 300)
+ggsave("Comparativa_Hotel.png", plot = Comparativa_Hotel, width = 14, height = 6.5, dpi = 300)
+ggsave("AutoconsumoEfectivo.png", plot = AutoconsumoEfectivo, width = 14, height = 6.5, dpi = 300)
+```
