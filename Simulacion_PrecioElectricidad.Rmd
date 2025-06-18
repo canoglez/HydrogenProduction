@@ -1,0 +1,109 @@
+---
+title: "Simulación_PrecioElectricidad"
+output: html_document
+date: "2025-06-18"
+---
+
+```{r}
+#Limpiar environment
+
+rm(list = ls())
+```
+
+```{r}
+# Carga de librerías
+
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(tsibble)
+library(fable)
+library(feasts)
+library(openxlsx)
+```
+
+Cargar de precios de electricidad mensual en los últimos 10 años y limpiar datos
+
+```{r}
+datos <- "XX.xlsx"
+
+df_raw <- read_excel(datos, col_names = TRUE)  # usar la primera fila como nombres de columna
+```
+
+```{r}
+#Eliminamos cualquier fila que contenga al menos un NA
+df_raw <- df_raw[complete.cases(df_raw), ]
+
+#Seleccionamos las variables que nos interesan
+df <- df_raw %>%
+  select(Fecha, `Precio elec. €/kWh`) %>%
+  rename(precio_kwh = `Precio elec. €/kWh`)
+
+#Se mantiene solo el mes y el año de la fecha
+df <- df %>%
+  mutate(Fecha = yearmonth(Fecha)) %>%      
+  as_tsibble(index = Fecha)
+```
+
+```{r}
+#Plot rápido de comprobación
+autoplot(df, precio_kwh)
+```
+
+
+
+Modelo de simulación SARIMA
+
+Se ha hecho sin drift, ya que la tendencia no es muy estable y es mejor emplear un random walk puro.
+
+```{r}
+#Ajuste automatico del modelo. En este caso se usa un modelo de SARIMA estándar, evitando la deriva para no romper la estimación
+fit <- df %>%
+   model(
+    sarima = ARIMA(precio_kwh ~ pdq(0,0,1) + PDQ(0,1,1) + 0)
+  )
+
+#Válida que el modelo es correcto
+report(fit)
+
+#Simulación de los precios de la electricidad a 20 años (mensual)
+simulacion <- forecast(fit, h = "240 months")
+```
+
+Gráfico de simulación de evolución del precio de la electricidad para los próximos 20 años (mensual)
+
+```{r}
+simulacion_precio <- autoplot(df, precio_kwh, colour = "steelblue", size = 0.8) +
+  autolayer(simulacion, .mean, colour = "red", size = 0.8) +
+  labs(title = "",
+       y = "€/kWh",
+       x = NULL) +
+  theme_bw(base_size = 12) +                    
+  theme(plot.title = element_text(hjust = 0.5), #centra el título
+        panel.border = element_blank()) #elimina borde del grafico
+
+print(simulacion_precio)
+```
+
+Se guarda el gráfico de la proyección
+
+```{r}
+ggsave("SimulaciónPrecioElectricidad.png", plot = simulacion_precio, width = 14, height = 6.5, dpi = 300)
+```
+
+Se descargan los datos para emplearlos en el análisis económico
+
+```{r}
+#Primero hay que crear el df con los datos a descargar
+df_simulacion <- simulacion %>%
+  as_tibble %>%
+  select(Fecha, .mean) %>%
+  rename(Precio_simulado = .mean)
+```
+
+```{r}
+#Descargar
+
+write.xlsx(df_simulacion,"SimulacionPrecioElectricidad.xlsx")
+```

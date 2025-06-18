@@ -1,0 +1,430 @@
+---
+title: "AnalisisEconomico"
+output: html_document
+date: "2025-06-18"
+---
+
+
+
+```{r}
+#Limpiar environment
+
+rm(list = ls())
+```
+
+```{r}
+# Carga de librerías
+
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(lubridate)
+```
+
+Carga de simulación de precios, de consumo y produccion energetica en todos los escenarios.
+
+```{r}
+#  Carga de precios de electricidad (2025-2044)
+datos <- "XX"
+
+simulacionelec <- read_excel(datos, col_names = TRUE)  # Usar la primera fila como nombres de columna
+
+#  Carga de datos de autoconsumo de la vivienda
+datos1 <- "XX"
+
+autoconsumo_vivienda <- read_excel(datos1, col_names = TRUE)  # Usar la primera fila como nombres de columna
+
+#  Carga de datos de autoconsumo del hotel
+datos2 <- "XX"
+
+autoconsumo_hotel <- read_excel(datos2, col_names = TRUE)  # Usar la primera fila como nombres de columna
+
+```
+
+Limpiar datos
+
+```{r}
+#Eliminamos cualquier fila que contenga al menos un NA
+simulacionelec <- simulacionelec[complete.cases(simulacionelec), ]
+autoconsumo_hotel <- autoconsumo_hotel[complete.cases(autoconsumo_hotel), ]
+autoconsumo_vivienda <- autoconsumo_vivienda[complete.cases(autoconsumo_vivienda), ]
+
+#Eliminamos datos de 2024
+autoconsumo_vivienda <- autoconsumo_vivienda %>%
+  filter(Año != 2024)
+
+autoconsumo_hotel <- autoconsumo_hotel %>%
+  filter(Año != 2024)
+```
+```{r}
+# Cambiamos modo de fecha de simulacionelec para que sea igual que los autoconsumos y poder unir en escenarios
+
+meses_esp <- c("ene","feb","mar","abr","may","jun",
+               "jul","ago","sep","oct","nov","dic")
+
+simulacionelec <- simulacionelec %>%
+  # Eliminamos el punto final de la abreviatura
+  mutate(Fecha = str_remove(Fecha, "\\.$")) %>%
+  separate(Fecha, into = c("Año", "Mes"), sep = " ")
+
+simulacionelec <- simulacionelec %>%
+  mutate(
+    Año = as.integer(Año),
+    Mes = as.character(Mes)
+  )
+```
+
+
+
+Creación de df de estudio de cada escenario.
+
+```{r}
+#Escenario 1 - Depencia 100% de la red eléctrica
+
+Escenario1 <- autoconsumo_vivienda %>%            
+  select(Año, Mes, Consumo) %>%                   
+  rename(Consumo_Vivienda = Consumo) %>%          
+  left_join(                                       
+    autoconsumo_hotel %>%                        
+      select(Año, Mes, Consumo) %>%               
+      rename(Consumo_Hotel = Consumo),            
+    by = c("Año", "Mes")                          
+  ) %>%          
+  left_join(                                       
+    simulacionelec %>%                        
+      select(Año, Mes, Precio_simulado),               
+    by = c("Año", "Mes")                          
+  )
+
+```
+```{r}
+#Escenario 2 - Placas solares y dependencia de la red eléctrica para cubrir faltas
+
+Escenario2 <- autoconsumo_vivienda %>%            
+  select(Año, Mes, Necesidad_Electrica) %>%                   
+  rename(Consumo_Vivienda_Red = Necesidad_Electrica) %>%          
+  left_join(                                       
+    autoconsumo_hotel %>%                        
+      select(Año, Mes, Necesidad_Electrica) %>%               
+      rename(Consumo_Hotel_Red = Necesidad_Electrica),            
+    by = c("Año", "Mes")                          
+  ) %>%          
+  left_join(                                       
+    simulacionelec %>%                        
+      select(Año, Mes, Precio_simulado),               
+    by = c("Año", "Mes")                          
+  )
+```
+
+```{r}
+#Escenario 3 - Placas solares y almacenamiento en hidrógeno verde, tirando de red electrica para cubrir faltas
+
+Escenario3 <- autoconsumo_vivienda %>%            
+  select(Año, Mes, Necesidad_No_Autoconsumida) %>%                   
+  rename(Consumo_Vivienda_Red = Necesidad_No_Autoconsumida) %>%          
+  left_join(                                       
+    autoconsumo_hotel %>%                        
+      select(Año, Mes, Necesidad_No_Autoconsumida) %>%               
+      rename(Consumo_Hotel_Red = Necesidad_No_Autoconsumida),            
+    by = c("Año", "Mes")                          
+  ) %>%          
+  left_join(                                       
+    simulacionelec %>%                        
+      select(Año, Mes, Precio_simulado),               
+    by = c("Año", "Mes")                          
+  )
+```
+Análisis económico simple - Contabilización de costes totales por escenario
+
+```{r}
+Analisis_Escenario1 <- Escenario1 %>%
+  mutate(
+    Coste_Vivienda = Precio_simulado * Consumo_Vivienda,
+    Coste_Hotel = Precio_simulado * Consumo_Hotel,
+    CosteAcumulado_vivienda = cumsum(Coste_Vivienda),
+    CosteAcumulado_Hotel = cumsum(Coste_Hotel),
+  )
+```
+```{r}
+Analisis_Escenario2 <- Escenario2 %>%
+  mutate(
+    Coste_Vivienda_Red = Precio_simulado * Consumo_Vivienda_Red,
+    Coste_Hotel_Red = Precio_simulado * Consumo_Hotel_Red,
+    Coste_Placas_Vivienda = if_else(row_number() == 1,  9800, 0),
+    Coste_Placas_Hotel  = if_else(row_number() == 1, 630000, 0),
+    Mantenimiento_Placas_Vivienda = if_else(Mes == "ene", 196, 0),
+    Mantenimiento_Placas_Hotel = if_else(Mes == "ene", 12600, 0),
+    Coste_Total_Vivienda = Coste_Vivienda_Red + Coste_Placas_Vivienda + Mantenimiento_Placas_Vivienda,
+    Coste_Total_Hotel = Coste_Hotel_Red + Coste_Placas_Hotel + Mantenimiento_Placas_Hotel,
+    CosteAcumulado_Vivienda = cumsum(Coste_Total_Vivienda),
+    CosteAcumulado_Hotel = cumsum(Coste_Total_Hotel)
+  )
+```
+
+```{r}
+Analisis_Escenario3 <- Escenario3 %>%
+  mutate(
+    Coste_Vivienda_Red = Precio_simulado * Consumo_Vivienda_Red,
+    Coste_Hotel_Red = Precio_simulado * Consumo_Hotel_Red,
+    Coste_Placas_Vivienda = if_else(row_number() == 1,  9800, 0),
+    Coste_Placas_Hotel  = if_else(row_number() == 1, 630000, 0),
+    Mantenimiento_Placas_Vivienda = if_else(Mes == "ene", 196, 0),
+    Mantenimiento_Placas_Hotel = if_else(Mes == "ene", 12600, 0),
+    Coste_Hidrogeno_Vivienda = if_else(row_number() == 1,  140000, 0),
+    Coste_Hidrogeno_Hotel = if_else(row_number() == 1,  1600000, 0),
+    Mantenimiento_Hidrogeno_Vivienda = if_else(Mes == "ene", 500, 0),
+    Mantenimiento_Hidrogeno_Hotel = if_else(Mes == "ene", 2500, 0),
+    Coste_Total_Vivienda = Coste_Vivienda_Red + Coste_Placas_Vivienda + Mantenimiento_Placas_Vivienda + Coste_Hidrogeno_Vivienda + Mantenimiento_Hidrogeno_Vivienda,
+    Coste_Total_Hotel = Coste_Hotel_Red + Coste_Placas_Hotel + Mantenimiento_Placas_Hotel +  Coste_Hidrogeno_Hotel + Mantenimiento_Hidrogeno_Hotel,
+    CosteAcumulado_Vivienda = cumsum(Coste_Total_Vivienda),
+    CosteAcumulado_Hotel = cumsum(Coste_Total_Hotel)
+  )
+```
+Unimos los resultadoes en un mismo df para poder comprobar. 
+
+```{r}
+Analisis <- Analisis_Escenario1 %>%
+  select(Año, Mes, Coste_Vivienda, Coste_Hotel) %>%
+  rename(Escenario1_Vivienda = Coste_Vivienda,
+         Escenario1_Hotel = Coste_Hotel,
+         ) %>%
+  left_join(                                       
+    Analisis_Escenario2 %>%                        
+      select(Año, Mes, Coste_Total_Vivienda, Coste_Total_Hotel) %>%               
+      rename(Escenario2_Vivienda = Coste_Total_Vivienda,
+             Escenario2_Hotel = Coste_Total_Hotel,
+      ),
+    by = c("Año", "Mes")                          
+  ) %>%
+  left_join(                                       
+    Analisis_Escenario3 %>%                        
+      select(Año, Mes, Coste_Total_Vivienda, Coste_Total_Hotel) %>%               
+      rename(Escenario3_Vivienda = Coste_Total_Vivienda,
+             Escenario3_Hotel = Coste_Total_Hotel,
+      ),
+    by = c("Año", "Mes")
+  )
+```
+
+```{r}
+meses_es <- c("ene","feb","mar","abr","may","jun",
+              "jul","ago","sep","oct","nov","dic")
+
+# crear variable unificada de fecha para gráficos
+Analisis <- Analisis %>%
+  mutate(
+    Año     = as.integer(Año),
+    Mes_chr = tolower(Mes),         
+    Mes_num = match(Mes_chr, meses_es),  
+    Fecha   = as_date(sprintf("%04d-%02d-01", Año, Mes_num))
+  ) %>%
+  filter(!is.na(Fecha))
+
+Analisis <-  Analisis %>%
+  select(-Mes, -Año, -Mes_chr, -Mes_num)
+
+```
+
+
+```{r}
+# Df de analisis solo de la vivienda
+
+Analisis_Vivienda <- Analisis  %>%
+  arrange(Fecha) %>%
+  select(Fecha, Escenario1_Vivienda, Escenario2_Vivienda, Escenario3_Vivienda) %>%
+  mutate(
+    Escenario1_AcumuladoVivienda = cumsum(Escenario1_Vivienda),
+    Escenario2_AcumuladoVivienda = cumsum(Escenario2_Vivienda),
+    Escenario3_AcumuladoVivienda = cumsum(Escenario3_Vivienda),
+  )
+
+```
+```{r}
+# Df de analisis solo del hotel
+
+Analisis_Hotel <- Analisis  %>%
+  arrange(Fecha) %>%
+  select(Fecha, Escenario1_Hotel, Escenario2_Hotel,Escenario3_Hotel) %>%
+  mutate(
+    Escenario1_AcumuladoHotel = cumsum(Escenario1_Hotel),
+    Escenario2_AcumuladoHotel = cumsum(Escenario2_Hotel),
+    Escenario3_AcumuladoHotel = cumsum(Escenario3_Hotel),
+  )
+
+```
+Gráficos
+
+```{r}
+# Comparación Escenarios Vivienda
+Grafico_Analisis_Vivienda <- ggplot(Analisis_Vivienda, aes(x = Fecha)) +
+  geom_line(aes(y = Escenario1_AcumuladoVivienda,
+                colour = "Escenario 1"),  size = 1, alpha = 0.7) +
+  geom_line(aes(y = Escenario2_AcumuladoVivienda,
+                colour = "Escenario 2"),  size = 1, alpha = 0.7) +
+  geom_line(aes(y = Escenario3_AcumuladoVivienda,
+                colour = "Escenario 3"),  size = 1, alpha = 0.7) +
+  scale_colour_manual(
+    name   = "",     # título de la leyenda
+    values = c(
+      "Escenario 1" = "firebrick",
+      "Escenario 2" = "darkgreen",
+      "Escenario 3" = "darkblue"
+    )
+  ) +
+  labs(
+    title = "Comparativa de escenarios en Vivienda",
+    x     = NULL,
+    y     = "Coste Acumulado (€)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+print(Grafico_Analisis_Vivienda)
+```
+
+```{r}
+# Comparación Escenarios Hotel
+Grafico_Analisis_Hotel <- ggplot(Analisis_Hotel, aes(x = Fecha)) +
+  geom_line(aes(y = Escenario1_AcumuladoHotel,
+                colour = "Escenario 1"),  size = 1, alpha = 0.7) +
+  geom_line(aes(y = Escenario2_AcumuladoHotel,
+                colour = "Escenario 2"),  size = 1, alpha = 0.7) +
+  geom_line(aes(y = Escenario3_AcumuladoHotel,
+                colour = "Escenario 3"),  size = 1, alpha = 0.7) +
+  scale_colour_manual(
+    name   = "",     # título de la leyenda
+    values = c(
+      "Escenario 1" = "firebrick",
+      "Escenario 2" = "darkgreen",
+      "Escenario 3" = "darkblue"
+    )
+  ) +
+  labs(
+    title = "Comparativa de escenarios en Hotel",
+    x     = NULL,
+    y     = "Coste Acumulado (€)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+print(Grafico_Analisis_Hotel)
+```
+
+Una vez hecho el caso base, vamos a pasar al caso con descuento de flujos de caja
+
+Vivienda
+
+```{r}
+# Tasa de descuento mensual
+i_mensual <- (1+0.07)^(1/12)-1
+
+# Analisis Vivienda
+Analisis_Vivienda_Desc <- Analisis  %>%
+  arrange(Fecha) %>%
+  select(Fecha, Escenario1_Vivienda, Escenario2_Vivienda, Escenario3_Vivienda)
+
+
+# Creamos variable de mes # para poder descontar
+Analisis_Vivienda_Desc <- Analisis_Vivienda_Desc  %>%
+  mutate(Fecha = as_date(Fecha)) %>%
+  mutate(min_fecha = min(Fecha)) %>%
+  mutate(
+    meses_desde_ini = 
+      (year(Fecha)  - year(min_fecha)) * 12 +
+      (month(Fecha) - month(min_fecha))
+  ) %>%
+  select(-min_fecha)
+
+# Calculamos valor descontado de Flujos
+Analisis_Vivienda_Desc <- Analisis_Vivienda_Desc  %>%
+  mutate(
+    PV1 = Escenario1_Vivienda / (1 + i_mensual) ^ meses_desde_ini,
+    PV2 = Escenario2_Vivienda / (1 + i_mensual) ^ meses_desde_ini,
+    PV3 = Escenario3_Vivienda / (1 + i_mensual) ^ meses_desde_ini
+  )
+
+# Calculamos el coste acumulado (descontado)
+Analisis_Vivienda_Desc <- Analisis_Vivienda_Desc  %>%
+  mutate(
+    Escenario1_AcumuladoVivienda = cumsum(PV1),
+    Escenario2_AcumuladoVivienda = cumsum(PV2),
+    Escenario3_AcumuladoVivienda = cumsum(PV3),
+  )
+```
+
+
+Hotel
+
+```{r}
+Analisis_Hotel_Desc <- Analisis  %>%
+  arrange(Fecha) %>%
+  select(Fecha, Escenario1_Hotel, Escenario2_Hotel, Escenario3_Hotel)
+
+
+# Creamos variable de mes # para poder descontar
+Analisis_Hotel_Desc <- Analisis_Hotel_Desc  %>%
+  mutate(Fecha = as_date(Fecha)) %>%
+  mutate(min_fecha = min(Fecha)) %>%
+  mutate(
+    meses_desde_ini = 
+      (year(Fecha)  - year(min_fecha)) * 12 +
+      (month(Fecha) - month(min_fecha))
+  ) %>%
+  select(-min_fecha)
+
+# Calculamos valor descontado de Flujos
+Analisis_Hotel_Desc <- Analisis_Hotel_Desc  %>%
+  mutate(
+    PV1 = Escenario1_Hotel / (1 + i_mensual) ^ meses_desde_ini,
+    PV2 = Escenario2_Hotel / (1 + i_mensual) ^ meses_desde_ini,
+    PV3 = Escenario3_Hotel / (1 + i_mensual) ^ meses_desde_ini
+  )
+
+# Calculamos el coste acumulado (descontado)
+Analisis_Hotel_Desc <- Analisis_Hotel_Desc  %>%
+  mutate(
+    Escenario1_AcumuladoHotel = cumsum(PV1),
+    Escenario2_AcumuladoHotel = cumsum(PV2),
+    Escenario3_AcumuladoHotel = cumsum(PV3),
+  )
+```
+Gráficos
+
+```{r}
+# Comparación Escenarios Vivienda
+Grafico_Analisis_Vivienda_Desc <- ggplot(Analisis_Vivienda_Desc, aes(x = Fecha)) +
+  geom_line(aes(y = Escenario1_AcumuladoVivienda,
+                colour = "Escenario 1"),  size = 1, alpha = 0.7) +
+  geom_line(aes(y = Escenario2_AcumuladoVivienda,
+                colour = "Escenario 2"),  size = 1, alpha = 0.7) +
+  geom_line(aes(y = Escenario3_AcumuladoVivienda,
+                colour = "Escenario 3"),  size = 1, alpha = 0.7) +
+  scale_colour_manual(
+    name   = "",     # título de la leyenda
+    values = c(
+      "Escenario 1" = "firebrick",
+      "Escenario 2" = "darkgreen",
+      "Escenario 3" = "darkblue"
+    )
+  ) +
+  labs(
+    title = "Comparativa de escenarios en Vivienda (Flujos descontados)",
+    x     = NULL,
+    y     = "Coste Acumulado (€)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+print(Grafico_Analisis_Vivienda_Desc)
+```
